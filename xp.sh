@@ -1,205 +1,124 @@
 #!/bin/bash
 
-if [ -v DEBUG ]; then
-    set -x
-fi;
+# xp -i [install] D
+# xp -rm [remove] D
+# xp -q [query]   D
+# xp -rc [reconfigure] L
+# xp -u [-Syu] L
+# ... more functions to go, D means early implementation, L means later implementation
 
-SHORT=n
-IGNORE_CASE=n
-REGEXP=n
-THIS_MODE=n
-MATCHING=()
-XBPS_QUERY_FLAGS=('-R')
+show_help()
+{
+    local arg0="${0##*/}"
+    cat <<EOF
+xp: xbps wrapper for better days
+forked from xbps-q
+original author: pohod <https://github.com/pohod/xbps-q>
 
-# extra flags
-GREP_FLAGS=()
-XBPS_FLAGS=()
+Usage: $arg0 [flag] [...]
 
-print_help() {
-    local arg0=$(basename $0)
-    echo xbps-q: better wrapper for xbps-query
-    echo "Usage: $arg0 [flags...] <matches...>"
-    echo "       $arg0 [flags...] -T <package>"
-    echo Options:
-    echo '   -h (--help)               Display a help message'
-    echo '   -P (--flag) <FLAG>        Pass a flag FLAG to xbps-query'
-    echo '   -R (--regex, --regexp)    Search by regexp'
-    echo '   -i                        Ignore case when searching'
-    echo '   -N (--only-names,         Display only names of packages'
-    echo '       --short)'
-    echo '   -T (--this)               Display info for a single specific package'
-    echo '                              (conflicts with some options)'
-    echo '  --installed                Display only installed packages'
-    echo '                              (conflicts with --not-installed)'
-    echo '  --not-installed            Display only not installed packages'
-    echo '                              (conflicts with --installed)'
+flag parameters [...] are the same from original xbps
+for specialized help, check xp -h [cmd]
+
+Options for help flag:
+        install, -i, i    Show help for installing packages
+        remove, -rm, rm   Show help for uninstalling packages
+        query, -q, q      Show help for xp -q / xbps-query
+
+Current Version: ${XP_VERSION:-elm1}
+EOF
 }
 
-error() {
-    echo $(basename $0): $@
-    exit 1
+exec_as_su()
+{
+    if [ "$EUID" -ne 0 ]; then
+        sudo "$@"
+    else
+        "$@"
+    fi
 }
 
-# Parse CLI options
-parse_cli() {
+init_parse()
+{
     while :; do
         if [ -z $1 ]; then break; fi;
         case "$1" in
-            '-h'|'--help')
-                print_help
+            'help' | '-h' | 'h')
+                show_help
                 exit 0
                 ;;
-            '-P'|'--flag')
-                [ -z $2 ] && error "No flag specified to $1"
-                XBPS_USER_FLAGS+=($2)
-                shift # skip the passed flag itself
+            'install' | '-i' | 'i')
+                # sudo xbps-install <package> ...
                 shift
-                ;;
-            '-R'|'--regex'|'--regexp')
-                XBPS_USER_FLAGS+=("--regex")
-                REGEXP=y
-                shift
-                ;;
-            '-i')
-                IGNORE_CASE=y
-                shift
-                ;;
-            '-T'|'--this')
-                THIS_MODE=y
-                shift
-                ;;
-            '-N'|'--short'|'--only-names')
-                PP_FILTERS="S$PP_FILTERS"
-                shift
-                ;;
-            '--installed')
-                if [[ $PP_FILTERS == *N* ]]; then
-                    error "Conflicting arguments: $1 and --not-installed"
+                if [ "$1" == "" ]; then
+                    echo "[ERROR] Usage: xp -i <package1> <package2> ..."
+                    break
+                fi                
+                if [ "$1" == "-y" ]; then
+                    shift
+                    local target=$1
+                    while [ -n "$1" ] && [[ "$1" != -* ]]; do
+                        echo "Installing as $1..."
+                        exec_as_su xbps-install -y "$1"
+                        shift
+                    done
+                else
+                    while [ -n "$1" ] && [[ "$1" != -* ]]; do
+                        echo "Installing as $1..."
+                        exec_as_su xbps-install "$1"
+                        shift
+                    done                    
                 fi
-                PP_FILTERS="I$PP_FILTERS"
-                shift
                 ;;
-            '--not-installed')
-                if [[ $PP_FILTERS == *I* ]]; then
-                    error "Conflicting arguments: $1 and --installed"
+            'remove' | '-rm' | 'rm')
+                # sudo xbps-remove -R <package> ...
+                shift
+                if [ "$1" == "" ]; then
+                    echo "[ERROR] Usage: xp -rm <package1> <package2> ..."
+                    break
                 fi
-                PP_FILTERS="N$PP_FILTERS"
-                shift
+                if [ "$1" == "-y" ]; then
+                    shift
+                    while [ -n "$1" ] && [[ "$1" != -* ]]; do
+                        echo "Removing $1..."
+                        exec_as_su xbps-remove -R -y "$1"
+                        shift
+                    done
+                else
+                    while [ -n "$1" ] && [[ "$1" != -* ]]; do
+                        echo "Removing $1..."
+                        exec_as_su xbps-remove -R "$1"
+                        shift
+                    done
+                fi           
                 ;;
-            -*) # match unknown flag options
-                echo Unrecognized option: $1
-                print_help
-                exit 1
-                ;;
-            *) # add things to match into the array
-                MATCHING+=($1)
+            'query' | '-q' | 'q')
+                # xbps-query, for now only xbps-query -l, -Rs and -s for simplicity
                 shift
-        esac
-    done
-
-    XBPS_FLAGS+=($XBPS_USER_FLAGS)
-
-    if [ $THIS_MODE == y ]; then
-        # cannot query for a single package with regexp
-        if [ $REGEXP = y ]; then
-            error "Cannot use '--this' flag with '--regexp'"
-        elif [[ $PP_FILTERS == *I* ]] || [[ $PP_FILTERS == *N* ]]; then
-            error "Cannot use '--this' flag with '--[not-]installed'"
-        fi
-    fi
-
-    if [ $IGNORE_CASE == y ]; then
-        GREP_FLAGS+=("-i")
-    fi
-    if [ $REGEXP == y ]; then
-        GREP_FLAGS+=("-E")
-        XBPS_FLAGS+=("--regex")
-    fi
-}
-
-do_match() {
-    local tmp_file=$(mktemp)
-    grep $GREP_FLAGS $1 $MATCHED_FILE > $tmp_file
-    [ -v DEBUG ] && cat $tmp_file
-    mv $tmp_file $MATCHED_FILE
-}
-
-find_matches() {
-    xbps-query -Rs ${MATCHING[0]} $XBPS_FLAGS > $MATCHED_FILE
-
-    for thing in ${MATCHING[@]:1}; do
-        do_match $thing
+                if [ "$1" == "" ]; then
+                    echo "[ERROR] Usage: xp -q <cmd> <optional> <optional> ..."
+                    break
+                fi
+                if [ "$1" == "-l" ]; then
+                    shift
+                    xbps-query -l
+                fi
+                if [ "$1" == "-Rs" ]; then
+                    while [ -n "$1" ] && [[ "$1" != -* ]]; do
+                        shift
+                        xbps-query -Rs "$1"
+                    done
+                fi
+                if [ "$1" == "-s" ]; then
+                    while [ -n "$1" ] && [[ "$1" != -* ]]; do
+                        shift
+                        xbps-query -s "$1"
+                    done
+                fi                
+                ;;
+            *)
+                echo "[FATAL] Unknown command, please enter xp -h"
+                ;;
+        esac        
     done
 }
-
-find_this_match() {
-    local thing=$1
-    (xbps-query -RS $thing $XBPS_FLAGS > $MATCHED_FILE ) || error "Could not query package: $thing"
-}
-
-postprocess_matches() {
-    [ -v DEBUG ] && echo Filters: $PP_FILTERS
-    local last_flags=$GREP_FLAGS
-    GREP_FLAGS=()
-    if [[ $PP_FILTERS == *I* ]]; then # match only installed packages
-        do_match "[*]"
-    elif [[ $PP_FILTERS == *N* ]]; then # match only not installed packages
-        # -v inverts grep (include only lines that didn't match)
-        # this is a hotfix because matching "[-]" doesn't seem
-        # to work at all, and I don't understand why.
-        local last_flags=$GREP_FLAGS
-        GREP_FLAGS+=("-v")
-        do_match "[*]"
-        GREP_FLAGS=$last_flags
-    fi
-    GREP_FLAGS=$last_flags
-    if [[ $PP_FILTERS == *S* ]]; then # show very short version (names only, separated by newline)
-        # TODO: strip the version off
-        local tmp_file=$(mktemp)
-        (cat $MATCHED_FILE | awk '{ print $2 }') > $tmp_file
-        mv $tmp_file $MATCHED_FILE
-    fi
-}
-
-postprocess_this_match() {
-    if [[ $PP_FILTERS == *S* ]]; then
-        # only display the lines matched here, in order:
-        local tmp_file=$(mktemp)
-        for line in "pkgname" "pkgver" "short_desc" "installed_size"; do
-            grep $line $MATCHED_FILE >> $tmp_file
-        done
-        local cleaned_file=$(mktemp)
-        awk '1 { printf(" %-16s: %s\n", $1, $2) }' FS=':' $tmp_file > $cleaned_file
-        mv $cleaned_file $tmp_file
-        mv $tmp_file $MATCHED_FILE
-    fi
-}
-
-# Execution begins here:
-
-parse_cli $@
-if [ -z $MATCHING ]; then
-    # echo Nothing to match
-    print_help
-    exit 1
-fi
-
-MATCHED_FILE=$(mktemp)
-if [ $THIS_MODE == y ]; then
-    find_this_match ${MATCHING[0]}
-    postprocess_this_match
-    cat $MATCHED_FILE
-    rm $MATCHED_FILE
-    # we handle package resolution failure in `find_this_match`
-    exit 0
-else
-    find_matches
-    postprocess_matches
-    cat $MATCHED_FILE
-    if ! [ -s $MATCHED_FILE ]; then
-        rm $MATCHED_FILE
-        exit 1
-    fi
-    rm $MATCHED_FILE
-    exit 0
-fi
