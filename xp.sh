@@ -25,7 +25,7 @@ Options for help flag:
         remove, -rm, rm   Show help for uninstalling packages
         query, -q, q      Show help for xp -q / xbps-query
 
-Current Version: ${XP_VERSION:-elm1}
+Current Version: ${XP_VERSION:-elm1catch1}
 EOF
 }
 
@@ -41,22 +41,21 @@ exec_as_su()
 init_parse()
 {
     while :; do
-        if [ -z $1 ]; then break; fi;
+        if [ -z "$1" ]; then return 1; fi;
         case "$1" in
             'help' | '-h' | 'h')
                 show_help
-                exit 0
+                return 0
                 ;;
             'install' | '-i' | 'i')
                 # sudo xbps-install <package> ...
                 shift
                 if [ "$1" == "" ]; then
                     echo "[ERROR] Usage: xp -i <package1> <package2> ..."
-                    break
+                    return 1
                 fi                
                 if [ "$1" == "-y" ]; then
                     shift
-                    local target=$1
                     while [ -n "$1" ] && [[ "$1" != -* ]]; do
                         echo "Installing as $1..."
                         exec_as_su xbps-install -y "$1"
@@ -75,7 +74,7 @@ init_parse()
                 shift
                 if [ "$1" == "" ]; then
                     echo "[ERROR] Usage: xp -rm <package1> <package2> ..."
-                    break
+                    return 1
                 fi
                 if [ "$1" == "-y" ]; then
                     shift
@@ -97,7 +96,7 @@ init_parse()
                 shift
                 if [ "$1" == "" ]; then
                     echo "[ERROR] Usage: xp -q <cmd> <optional> <optional> ..."
-                    break
+                    return 1
                 fi
                 if [ "$1" == "-l" ]; then
                     shift
@@ -119,6 +118,7 @@ init_parse()
             *)
                 echo "[FATAL] Unknown command, please enter xp -h"
                 ;;
-        esac        
+        esac
+        shift        
     done
 }
