@@ -25,7 +25,7 @@ Options for help flag:
         remove, -rm, rm   Show help for uninstalling packages
         query, -q, q      Show help for xp -q / xbps-query
 
-Current Version: ${XP_VERSION:-elm1catch1}
+Current Version: ${XP_VERSION:-elm1catch2}
 EOF
 }
 
@@ -101,6 +101,7 @@ init_parse()
                 if [ "$1" == "-l" ]; then
                     shift
                     xbps-query -l
+                    return 0
                 fi
                 if [ "$1" == "-Rs" ]; then
                     while [ -n "$1" ] && [[ "$1" != -* ]]; do
